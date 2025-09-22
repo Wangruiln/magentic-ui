@@ -19,6 +19,14 @@ sudo docker build -t magentic-ui-vnc-browser:latest ./src/magentic_ui/docker/mag
 sudo docker run -it --user pwuser -p 37367:37367 --cap-add=SYS_ADMIN magentic-ui-vnc-browser
 #注意容器的两个端口在启动文件（在dockerfile里面查看）里面设置了，所以下面两个端口需要一致
 
+创建环境
+uv venv --python=3.12 .venv
+. .venv/bin/activate
+uv pip install magentic-ui
+
+# for Azure
+pip install magentic-ui[azure] 
+
 启动fastapi
 cd magentic-ui
 source .venv/bin/activate
