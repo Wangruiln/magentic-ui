@@ -112,12 +112,15 @@ class HeadlessDockerPlaywrightBrowser(
         )
 
         client = docker.from_env()
-        image_name = "mcr.microsoft.com/playwright:v1.51.1-noble"
+        image_name = "mcr.microsoft.com/playwright:v1.51.0-noble"
+        #image_name = "magentic-ui-vnc-browser"
 
         # Check if the image exists locally, if not pull it
         try:
             client.images.get(image_name)
+            #breakpoint()
             logger.info(f"Docker image {image_name} found locally")
+            
         except docker.errors.ImageNotFound:
             logger.info(f"Docker image {image_name} not found locally, pulling...")
             await asyncio.to_thread(client.images.pull, image_name)

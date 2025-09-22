@@ -11,6 +11,7 @@ const port = process.env.PLAYWRIGHT_PORT || 37367;
     headless: false,
     port: port,
     wsPath: wsPath,
+    chromiumSandbox: true,
     args: [
       "--start-fullscreen",
       "--start-maximized",
@@ -24,6 +25,7 @@ const port = process.env.PLAYWRIGHT_PORT || 37367;
       "--force-device-scale-factor=1.0",
       "--disable-features=DefaultViewportMetaTag",
       "--force-device-width=1440",
+      "--disable-blink-features=AutomationControlled"
     ],
   });
 

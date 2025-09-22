@@ -428,7 +428,9 @@ class PlaywrightController:
 
         try:
             # Attempt normal navigation.
+            #breakpoint()
             await page.goto(url)
+            await page.reload()
             await page.wait_for_load_state("load", timeout=self._timeout_load * 1000)
             await asyncio.sleep(1)
             reset_prior_metadata_hash = True

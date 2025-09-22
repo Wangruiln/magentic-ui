@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 from autogen_agentchat.ui import Console
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
 from autogen_agentchat.conditions import TextMentionTermination
 from autogen_agentchat.teams import RoundRobinGroupChat
 from magentic_ui.agents import WebSurfer
@@ -60,12 +61,20 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
+    model_client = AzureOpenAIChatCompletionClient(
+        model="gpt-4o",
+        api_version="2024-12-01-preview",
+        azure_endpoint="https://midas-openai2.openai.azure.com",
+        azure_deployment="us-gpt-4o",
+        api_key='',  # 注意：实际部署时不要硬编码密钥
+    )
     # Start the browser before initializing WebSurfer
     if args.port != -1 and args.novnc_port != -1:
         browser = VncDockerPlaywrightBrowser(
             bind_dir=Path("/tmp"),
             playwright_port=args.port,
             novnc_port=args.novnc_port,
+            playwright_websocket_path="default",
             inside_docker=False,
         )
         print(f"Browser remote view: {browser.vnc_address}?autoconnect=1")
@@ -74,7 +83,6 @@ async def main() -> None:
     else:
         browser = LocalPlaywrightBrowser(headless=False)
 
-    model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
     termination = TextMentionTermination("Terminate")
 

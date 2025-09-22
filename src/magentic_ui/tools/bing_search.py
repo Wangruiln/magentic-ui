@@ -34,7 +34,7 @@ async def extract_page_markdown(url: str) -> tuple[str, str]:
                 headless=True, env={}, args=launch_args, chromium_sandbox=True
             )
             context = await browser.new_context(
-                accept_downloads=False,  # Disable downloads
+                storage_state=None, 
                 permissions=[],  # No additional permissions
             )
 

@@ -250,6 +250,8 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         viewport_height: int = 1440,
         viewport_width: int = 1440,
         use_action_guard: bool = False,
+        only_url: bool = False,
+        use_deep_search: bool = False,
     ) -> None:
         """
         Initialize the WebSurfer.
@@ -294,6 +296,9 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         self._last_outside_message: str = ""
         self._last_rejected_url: str | None = None
 
+        self.use_deep_search = use_deep_search
+        self.only_url = only_url
+        self.flag = False  # Flag to indicate if we should stop processing actions
         # TODO: These are a little bit of a hack so we can get the ports out of the browser object
         self.novnc_port = -1
         self.playwright_port = -1
@@ -564,6 +569,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
                 ) = await self._get_llm_response(
                     cancellation_token=llm_cancellation_token
                 )
+                
                 final_usage = RequestUsage(
                     prompt_tokens=sum([u.prompt_tokens for u in self.model_usage]),
                     completion_tokens=sum(
@@ -594,7 +600,6 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
                         ),
                         inner_messages=self.inner_messages,
                     )
-                    break
                 else:
                     # need to execute the tool(s)
                     assert isinstance(response, list)
@@ -761,13 +766,27 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
                         # execute the tool call
                         action_result = ""
                         try:
-                            action_result = await self._execute_tool(
-                                message=[action],
-                                rects=rects,
-                                tools=tools,
-                                element_id_mapping=element_id_mapping,
-                                cancellation_token=llm_cancellation_token,
-                            )
+                            if action.name == "web_search" and self.use_deep_search:
+                                tool_kwargs = await self._execute_tool_deep_search_args(
+                                    message=[action],
+                                    rects=rects,    
+                                    tools=tools,
+                                    element_id_mapping=element_id_mapping,
+                                    cancellation_token=llm_cancellation_token,
+                                )
+                                async for result in self._execute_tool_deep_web_search(**tool_kwargs):
+                                    yield result
+                                break
+                            else:
+                                action_result = await self._execute_tool(
+                                    message=[action],
+                                    rects=rects,
+                                    tools=tools,
+                                    element_id_mapping=element_id_mapping,
+                                    cancellation_token=llm_cancellation_token,
+                                )
+
+                            
                         except RuntimeError as e:
                             if "WebSurfer was paused" in str(e):
                                 self.logger.info(f"Tool execution paused: {e}")
@@ -778,6 +797,9 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
                         except Exception as e:
                             self.logger.error(f"Error executing tool: {e}")
                             action_result = f"Error occurred while executing action {tool_call_msg}: {e}"
+                        if self.flag:
+                            found_stop_action = True
+                            break
                         new_screenshot = (
                             await self._playwright_controller.get_screenshot(self._page)
                         )
@@ -953,6 +975,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         """
 
         # Lazy init, initialize the browser and the page on the first generate reply only
+        
         if not self.did_lazy_init:
             await self.lazy_init()
 
@@ -1099,7 +1122,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         tool_names = WebSurfer._tools_to_names(tools)
 
         webpage_text = await self._playwright_controller.get_visible_text(self._page)
-
+        #breakpoint()
         if not self.json_model_output:
             text_prompt = WEB_SURFER_TOOL_PROMPT.format(
                 tabs_information=tabs_information_str,
@@ -1164,6 +1187,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             await self._model_context.clear()
             for msg in history:
                 await self._model_context.add_message(msg)
+            
             token_limited_history = await self._model_context.get_messages()
         except Exception:
             token_limited_history = history
@@ -1190,12 +1214,14 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
                     extra_create_args=create_args,
                 )
             else:
+                
                 response = await self._model_client.create(
                     token_limited_history,
                     tools=tools,
                     cancellation_token=cancellation_token,
                 )
         else:
+            
             response = await self._model_client.create(
                 token_limited_history,
                 cancellation_token=cancellation_token,
@@ -1304,12 +1330,13 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             ret, approved = await self._check_url_and_generate_msg("bing.com")
             if not approved:
                 return ret
+            url_q = quote_plus(url)
             (
                 reset_prior_metadata,
                 reset_last_download,
             ) = await self._playwright_controller.visit_page(
                 self._page,
-                f"https://www.bing.com/search?q={quote_plus(url)}&FORM=QBLH",
+                f"https://www.bing.com/search?q={url_q}&FORM=QBLH",
             )
         # Otherwise, prefix with https://
         else:
@@ -1340,25 +1367,212 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         return "I refreshed the current page."
 
     async def _execute_tool_web_search(self, args: Dict[str, Any]) -> str:
+        
         assert self._page is not None
         ret, approved = await self._check_url_and_generate_msg("bing.com")
         if not approved:
             return ret
         query = cast(str, args.get("query"))
         action_description = f"I typed '{query}' into the browser search bar."
+        #breakpoint()
+        #query_q=quote_plus(query)
         (
             reset_prior_metadata,
             reset_last_download,
         ) = await self._playwright_controller.visit_page(
             self._page,
-            f"https://www.bing.com/search?q={quote_plus(query)}&FORM=QBLH",
+            f"https://www.bing.com/search?q={query}&FORM=QBLH",
         )
+        
+        print(self._page)
+        new_screenshot = (await self._playwright_controller.get_screenshot(self._page))
+        if self.debug_dir is not None:
+            current_timestamp = "_" + int(time.time()).__str__()
+            screenshot_png_name = (
+                "screenshot_raw" + current_timestamp + ".png"
+            )
+            PIL.Image.open(io.BytesIO(new_screenshot)).save(
+                os.path.join(self.debug_dir, screenshot_png_name)
+            )
+        
         if reset_last_download:
             self._last_download = None
         if reset_prior_metadata:
             self._prior_metadata_hash = None
         return action_description
 
+    async def _execute_tool_deep_web_search(self, args: Dict[str, Any]) -> AsyncGenerator[Response, None]:
+        assert self._page is not None
+        ret, approved = await self._check_url_and_generate_msg("bing.com")
+        if not approved:
+            yield Response(
+                chat_message=TextMessage(
+                    content=ret,
+                    source=self.name,
+                    metadata={"internal": "no"},
+                )
+            )
+        query = cast(str, args.get("query"))
+        action_description = f"I typed '{query}' into the browser search bar."
+        query_q = quote_plus(query)
+        (
+            reset_prior_metadata,
+            reset_last_download,
+        ) = await self._playwright_controller.visit_page(
+            self._page,
+            f"https://www.bing.com/search?q={query_q}&FORM=QBLH",
+        )
+        new_screenshot = await self._playwright_controller.get_screenshot(self._page)
+        if self.to_save_screenshots and self.debug_dir is not None:
+            current_timestamp = "_" + int(time.time()).__str__()
+            screenshot_png_name = "screenshot_raw" + current_timestamp + ".png"
+            PIL.Image.open(io.BytesIO(new_screenshot)).save(
+                os.path.join(self.debug_dir, screenshot_png_name)
+            )
+        if reset_last_download:
+            self._last_download = None
+        if reset_prior_metadata:
+            self._prior_metadata_hash = None
+        
+        collected_summaries = []
+        
+        related_elements = await self._get_related_search_elements(query)
+        search_page = self._page
+        
+        if self.only_url:
+            url = []
+            for elem_id in related_elements:
+                new_page_tentative = await self._playwright_controller.click_id(
+                    self._context, self._page, elem_id
+                )
+                if new_page_tentative:
+                    url.append(new_page_tentative.url)
+            yield Response(
+                chat_message=TextMessage(
+                    content=f"Collected URLs: {', '.join(url)}",
+                    source=self.name,
+                    models_usage=self.model_usage[-1],
+                ),
+            )
+        else:
+            for elem_id in related_elements[:5]:  # 限制最多5个
+                url=[]
+                self._page = search_page
+                new_page_tentative = await self._playwright_controller.click_id(
+                    self._context, self._page, elem_id
+                )
+                if new_page_tentative:
+                    url.append(new_page_tentative.url)
+                    self._page = new_page_tentative
+                    self._prior_metadata_hash = None
+                    await asyncio.sleep(1)  # 等待加载
+                    # 收集子页面总结
+                    sub_summary = await self._markdown_page(question=query)
+                    #下载图片
+                    regex = r'!\[.*?\]\((https?:\/\/[^)]+?)(?:\?.*?)?\)\]\((https?:\/\/[^)]+?)(?:\?.*?)?\)'
+                    img_urls = set()
+                    matches = re.finditer(regex, sub_summary)
+                    for match in matches:
+                        # match.group(1) 是 img_url, match.group(2) 是 link_url
+                        img_urls.add(match.group(1))
+                        img_urls.add(match.group(2))
+                    img_urls = list(img_urls)
+                    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico'}
+                    image_urls = set()
+                    for url in img_urls:
+                        # 忽略查询参数，只检查路径部分
+                        base_url = url.split('?')[0]
+                        if any(base_url.lower().endswith(ext) for ext in image_extensions):
+                            image_urls.add(url)
+                    
+                    image_urls = list(image_urls)
+                    ag_image_list = []
+                    import requests
+                    for i, url in enumerate(img_urls):
+                        if url.startswith("https"):
+                            try:
+                                response = requests.get(url)
+                                if response.status_code == 200:
+                                    img_data = response.content
+                                    pil_image = PIL.Image.open(io.BytesIO(img_data))
+                                    # 新增: 调整大小
+                                    scaled_image = pil_image.resize((self.MLM_WIDTH, self.MLM_HEIGHT))
+                                    pil_image.close()
+                                    # 新增: 转换为 AGImage
+                                    ag_image = AGImage.from_pil(scaled_image)
+                                    ag_image_list.append(ag_image)
+                            except Exception as e:
+                                self.logger.error(f"Error processing image {url}: {e}")
+                                continue
+                    breakpoint()
+                    image_summary = await self._markdown_page_with_images(question=query, markdown_content=sub_summary, images=ag_image_list)
+                    collected_summaries.append(image_summary)
+                    description = f"Sub-page summary for link:{new_page_tentative.url}: {image_summary}"
+                    yield Response(
+                        chat_message=TextMessage(
+                            content=description,
+                            source=self.name,
+                            models_usage=self.model_usage[-1],
+                        ),
+                    )
+                    
+                    # 返回搜索结果页面
+                    self._page = search_page
+                # 整体总结
+            overall_summary = await self._summarize_collected_content(collected_summaries, query)
+            action_description += f"\nCollected and summarized from {len(collected_summaries)} links: {overall_summary}"
+            self.flag=True
+            yield Response(
+                chat_message=TextMessage(
+                    content=action_description,
+                    source=self.name,
+                    models_usage=self.model_usage[-1],
+                ),
+            )
+
+    async def _summarize_collected_content(self, summaries: List[str], query: str) -> str:
+        combined = "\n".join(summaries)
+        prompt = f"Summarize the following collected content for query '{query}' into a comprehensive report:\n{combined}"
+        messages = [SystemMessage(content=WEB_SURFER_QA_SYSTEM_MESSAGE), UserMessage(content=prompt, source=self.name)]
+        response = await self._model_client.create(messages, cancellation_token=None)
+        self.model_usage.append(response.usage)
+        assert isinstance(response.content, str)
+        return response.content
+    
+    async def _get_related_search_elements(self, query: str) -> List[str]:
+        # 获取当前页面的交互矩形（rects），用于识别链接
+        
+        rects = await self._playwright_controller.get_interactive_rects(self._page)
+        # 准备提示，查询LLM以获取相关链接的ID
+        visible_targets = "\n".join(self._format_target_list(list(rects.keys()), rects))
+        prompt = f"从“{query}”的搜索结果中，找出所有提供有用信息的相关链接 ID（如果ID指向的是图片或者视频链接，禁止返回这些ID，只需要文章类型的ID） 。可见目标：{visible_targets}\n\n仅输出包含这些 ID 的 JSON 数组，例如 [\"1\", \"2\", \"3\"]。请勿在 JSON 数组之外添加任何说明、文本或其他内容。"
+        # 构建消息列表，与源代码一致
+        history: List[LLMMessage] = []
+        # 添加系统消息（如果需要，与_get_llm_response类似）
+        date_today = datetime.now().strftime("%Y-%m-%d")
+        history.append(SystemMessage(content=WEB_SURFER_SYSTEM_MESSAGE.format(date_today=date_today)))
+        # 添加用户消息
+        history.append(UserMessage(content=prompt, source=self.name))
+        # 使用TokenLimitedChatCompletionContext管理令牌限制，与源代码一致
+        await self._model_context.clear()
+        for msg in history:
+            await self._model_context.add_message(msg)
+        token_limited_history = await self._model_context.get_messages()
+        # 调用模型，与源代码一致（无tools，因为这是简单查询）
+        response = await self._model_client.create(
+            token_limited_history,
+            cancellation_token=None  # 与用户代码一致，或传入实际token如果需要
+        )
+        
+        self.model_usage.append(response.usage)
+        # 假设响应为JSON列表（e.g., ["1", "2", "3"]）；在实际中可添加更健壮解析
+        assert isinstance(response.content, str)
+        try:
+            ids = json.loads(response.content)
+            return [str(id) for id in ids if str(id) in rects]  # 过滤有效ID
+        except json.JSONDecodeError:
+            return []  # 错误处理：返回空列表
+        
     async def _execute_tool_page_up(self, args: Dict[str, Any]) -> str:
         assert self._page is not None
         await self._playwright_controller.page_up(self._page)
@@ -1616,7 +1830,85 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         await self._playwright_controller.keypress(self._page, keys)
         keys_str = ", ".join(f"'{k}'" for k in keys)
         return f"Pressed the following keys in sequence: {keys_str}"
+    async def _execute_tool_deep_search_args(
+        self,
+        message: List[FunctionCall],
+        rects: Dict[str, InteractiveRegion],
+        tools: List[ToolSchema],
+        element_id_mapping: Dict[str, str],
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> str:
+        """Execute a tool action in the browser.
 
+        Args:
+            message (List[FunctionCall]): List of function calls from the model, should be a single function call
+            rects (Dict[str, InteractiveRegion]): Dictionary of interactive page elements
+            tools (List[ToolSchema]): List of available tool schemas
+            element_id_mapping (Dict[str, str]): Mapping of element IDs
+            cancellation_token (CancellationToken, optional): Token to cancel the operation. Default: None
+
+        Returns:
+            str: Description of the action taken
+
+        Raises:
+            ValueError: If an unknown tool is specified
+            RuntimeError: If the WebSurfer was paused during tool execution
+        """
+        #breakpoint()
+        assert self._context is not None, "Browser context is not initialized"
+        assert len(message) == 1, "Expected exactly one function call"
+        assert self._page is not None
+
+        name = message[0].name
+        args = json.loads(message[0].arguments)
+
+        self.logger.debug(
+            WebSurferEvent(
+                source=self.name,
+                url=self._page.url,
+                action=name,
+                arguments=args,
+                message=f"{name}( {json.dumps(args)} )",
+            )
+        )
+        self.inner_messages.append(
+            TextMessage(content=f"{name}( {json.dumps(args)} )", source=self.name)
+        )
+
+        # Convert tool name to function name (e.g. "visit_url" -> "_execute_tool_visit_url")
+        if name == "web_search" and self.use_deep_search:
+            tool_func_name = "_execute_tool_deep_web_search"
+        else:
+            tool_func_name = f"_execute_tool_{name}"
+        tool_func = getattr(self, tool_func_name, None)
+
+        if tool_func is None:
+            tool_names = WebSurfer._tools_to_names(tools)
+
+            raise ValueError(
+                f"Unknown tool '{name}'. Please choose from:\n\n{tool_names}"
+            )
+
+        # Create the appropriate arguments based on the tool's requirements
+        tool_kwargs = {"args": args}
+        if name in [
+            "click",
+            "input_text",
+            "hover",
+            "select_option",
+            "upload_file",
+            "click_full",
+        ]:
+            tool_kwargs.update(
+                {"rects": rects, "element_id_mapping": element_id_mapping}
+            )
+        if name in ["answer_question", "summarize_page"]:
+            tool_kwargs["cancellation_token"] = cancellation_token
+
+        return tool_kwargs
+
+        
+    
     async def _execute_tool(
         self,
         message: List[FunctionCall],
@@ -1641,6 +1933,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             ValueError: If an unknown tool is specified
             RuntimeError: If the WebSurfer was paused during tool execution
         """
+        #breakpoint()
         assert self._context is not None, "Browser context is not initialized"
         assert len(message) == 1, "Expected exactly one function call"
         assert self._page is not None
@@ -1662,7 +1955,10 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         )
 
         # Convert tool name to function name (e.g. "visit_url" -> "_execute_tool_visit_url")
-        tool_func_name = f"_execute_tool_{name}"
+        if name == "web_search" and self.use_deep_search:
+            tool_func_name = "_execute_tool_deep_web_search"
+        else:
+            tool_func_name = f"_execute_tool_{name}"
         tool_func = getattr(self, tool_func_name, None)
 
         if tool_func is None:
@@ -1827,6 +2123,188 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         assert isinstance(response.content, str)
         return response.content
 
+    async def _markdown_page(
+        self,
+        question: Optional[str] = None,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> str:
+        """Generate a summary of the current page content.
+
+        Args:
+            question (str, optional): Optional specific question to answer about the page. Default: None
+            cancellation_token (CancellationToken, optional): Token to cancel the operation. Default: None
+
+        Returns:
+            str: Summary text or answer to the question
+        """
+        assert self._page is not None
+
+        # Get page content and title
+        page_markdown: str = await self._playwright_controller.get_page_markdown(
+            self._page
+        )
+        title: str = await self._page.title() or self._page.url
+        # Take a screenshot and scale it
+        screenshot = await self._playwright_controller.get_screenshot(self._page)
+        # if self.debug_dir is not None:
+        #     current_timestamp = "_" + int(time.time()).__str__()
+        #     screenshot_png_name = (
+        #         "screenshot_raw" + current_timestamp + ".png"
+        #     )
+        #     PIL.Image.open(io.BytesIO(screenshot)).save(
+        #         os.path.join(self.debug_dir, screenshot_png_name)
+        #     )
+        pil_image = PIL.Image.open(io.BytesIO(screenshot))
+        scaled_screenshot = pil_image.resize((self.MLM_WIDTH, self.MLM_HEIGHT))
+        pil_image.close()
+        ag_image = AGImage.from_pil(scaled_screenshot)
+
+        # Prepare the system prompt and user prompt
+        messages: List[LLMMessage] = []
+        prompt = """
+        你是一个优秀的网页信息提取专家，请你处理一段网页文本内容，完成以下任务：
+        1、明确提取主题：从文本中提取所有与 {question} 直接相关的信息。
+        2、提取内容范围：
+            - 相关的文字内容：包括标题、作者、发布信息、正文等。
+            - 相关的图片链接：文中出现的与主题相关的图片的链接（通常以.jpg、.png 等结尾）。输出格式要求：
+        3、输出格式要求
+            - 保持原文的逻辑结构和层级（如标题、段落、列表等），只保留与主题相关的内容，剔除无关信息（如其他推荐、导航栏、评论区等）。
+            - 文字内容需完整提取，不遗漏关键信息。
+            - 图片链接需完整（包括标题或着描述）嵌入到文本中原本出现图片的位置，格式为：[![title](src)](图片链接)，其中 title 是图片的描述或标题，src 是图片的链接。
+            - 确保图片链接位置与原文中图片出现的上下文逻辑一致，不单独罗列图片链接。
+            - 剔除重复的图片链接，确保每个图片链接只出现一次。
+            - 禁止输出其他对操作进行解释的文本或说明，只输出处理后的文本内容。
+        """
+        messages.append(SystemMessage(content=prompt))
+
+        # Create the prompt with the question
+        def WEB_SURFER_PROMPT(title: str, question: str | None = None) -> str:
+            base_prompt = f"我们正在访问网页 '{title}'。其全文内容如下，同时附带页面当前视口的截图。"
+            if question is not None:
+                return f"{base_prompt} 请按要求帮我提取内容：'{question}'：\n\n"
+            else:
+                return f"{base_prompt} 请按要求帮我提取内容\n\n"
+        prompt = WEB_SURFER_PROMPT(title, question)
+
+        # Truncate the page content if needed to fit within token limits
+        tokenizer = tiktoken.encoding_for_model("gpt-4o")
+        prompt_tokens = len(tokenizer.encode(prompt))
+        # Reserve tokens for the image (SCREENSHOT_TOKENS) and some buffer for the response
+        max_content_tokens = 128000 - self.SCREENSHOT_TOKENS - prompt_tokens - 1000
+
+        if max_content_tokens <= 0:
+            # If we don't have enough tokens, just use a minimal prompt
+            content = prompt
+        else:
+            # Truncate the page content to fit within the token limit
+            content_tokens = tokenizer.encode(page_markdown)
+            if len(content_tokens) > max_content_tokens:
+                truncated_content = tokenizer.decode(
+                    content_tokens[:max_content_tokens]
+                )
+                content = f"Page content (truncated):\n{truncated_content}\n\n{prompt}"
+            else:
+                content = f"Page content:\n{page_markdown}\n\n{prompt}"
+
+        # Create the message with the content and image
+        messages.append(
+            UserMessage(
+                content=[content, ag_image],
+                source=self.name,
+            )
+        )
+        # Generate the response
+        response = await self._model_client.create(
+            messages, cancellation_token=cancellation_token
+        )
+        self.model_usage.append(response.usage)
+        scaled_screenshot.close()
+
+        assert isinstance(response.content, str)
+        return response.content
+
+    async def _markdown_page_with_images(
+        self,
+        question: Optional[str] = None,
+        markdown_content: Optional[str] = None,
+        images: Optional[List[bytes]] = None,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> str:
+        """Generate a summary of the current page content.
+
+        Args:
+            question (str, optional): Optional specific question to answer about the page. Default: None
+            cancellation_token (CancellationToken, optional): Token to cancel the operation. Default: None
+
+        Returns:
+            str: Summary text or answer to the question
+        """
+        assert self._page is not None
+
+        title: str = await self._page.title() or self._page.url
+
+        # Prepare the system prompt and user prompt
+        messages: List[LLMMessage] = []
+        prompt = """
+        你是一个优秀的网页信息提取专家，你会收到网页markdown格式信息以及图片，完成以下任务要求：
+        1、明确提取主题：从文本和图片中提取所有与 {question} 直接相关的信息。
+        2、提取内容范围：
+            - 提取图片中与主题有关的文字内容
+        3、输出格式要求
+            - 不允许修改和遗漏网页的markdown内容和格式，只允许在原本的内容里做图片信息的补充。
+            - 图片内容需完整提取，不遗漏关键信息。
+            - 图片内容嵌入到文本中原本出现图片链接的位置，图片格式为：[![title](src)](图片链接)，其中 title 是图片的描述或标题，src 是图片的链接，结合图片的标题将内容相对应。
+            - 保留图片链接
+            - 确保输出markdown格式清晰，逻辑一致。
+            - 禁止输出其他对操作进行解释的文本或说明，只输出处理后的文本内容。
+        """
+        messages.append(SystemMessage(content=prompt))
+
+        # Create the prompt with the question
+        def WEB_SURFER_PROMPT(title: str, question: str | None = None) -> str:
+            base_prompt = f"我们正在访问网页 '{title}'。请你结合文本内容和图片内容，完成任务要求。"
+            if question is not None:
+                return f"{base_prompt} 请按要求帮我提取内容：'{question}'：\n\n"
+            else:
+                return f"{base_prompt} 请按要求帮我提取内容\n\n"
+        prompt = WEB_SURFER_PROMPT(title, question)
+
+        # Truncate the page content if needed to fit within token limits
+        tokenizer = tiktoken.encoding_for_model("gpt-4o")
+        prompt_tokens = len(tokenizer.encode(prompt))
+        # Reserve tokens for the image (SCREENSHOT_TOKENS) and some buffer for the response
+        max_content_tokens = 128000 - self.SCREENSHOT_TOKENS - prompt_tokens - 1000
+
+        if max_content_tokens <= 0:
+            # If we don't have enough tokens, just use a minimal prompt
+            content = prompt
+        else:
+            # Truncate the page content to fit within the token limit
+            content_tokens = tokenizer.encode(markdown_content)
+            if len(content_tokens) > max_content_tokens:
+                truncated_content = tokenizer.decode(
+                    content_tokens[:max_content_tokens]
+                )
+                content = f"Page content (truncated):\n{truncated_content}\n\n{prompt}"
+            else:
+                content = f"Page content:\n{markdown_content}\n\n{prompt}"
+
+        # Create the message with the content and image
+        messages.append(
+            UserMessage(
+                content=[content]+images,
+                source=self.name,
+            )
+        )
+        # Generate the response
+        response = await self._model_client.create(
+            messages, cancellation_token=cancellation_token
+        )
+        self.model_usage.append(response.usage)
+
+        assert isinstance(response.content, str)
+        return response.content
+    
     async def _summarize_page(
         self,
         question: Optional[str] = None,
@@ -1848,9 +2326,10 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             self._page
         )
         title: str = await self._page.title() or self._page.url
-
+        
         # Take a screenshot and scale it
         screenshot = await self._playwright_controller.get_screenshot(self._page)
+
         pil_image = PIL.Image.open(io.BytesIO(screenshot))
         scaled_screenshot = pil_image.resize((self.MLM_WIDTH, self.MLM_HEIGHT))
         pil_image.close()
@@ -1858,10 +2337,30 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
 
         # Prepare the system prompt and user prompt
         messages: List[LLMMessage] = []
-        messages.append(SystemMessage(content=WEB_SURFER_QA_SYSTEM_MESSAGE))
+        prompt = """
+        你是一个优秀的网页信息提取专家，请你处理一段网页文本内容，完成以下任务：
+        1、明确提取主题：从文本中提取所有与 {question} 直接相关的信息。
+        2、提取内容范围：
+            - 相关的文字内容：包括标题、作者、发布信息、正文等。
+            - 相关的图片链接：文中出现的与主题相关的图片的链接（通常以.jpg、.png 等结尾）。输出格式要求：
+        3、输出格式要求
+            - 保持原文的逻辑结构和层级（如标题、段落、列表等），只保留与主题相关的内容，剔除无关信息（如其他推荐、导航栏、评论区等）。
+            - 文字内容需完整提取，不遗漏关键信息。
+            - 图片链接需完整（包括标题或着描述）嵌入到文本中原本出现图片的位置，格式为：[![title](src)](图片链接)，其中 title 是图片的描述或标题，src 是图片的链接。
+            - 确保图片链接位置与原文中图片出现的上下文逻辑一致，不单独罗列图片链接。
+            - 剔除重复的图片链接，确保每个图片链接只出现一次。
+            - 禁止输出其他对操作进行解释的文本或说明，只输出处理后的文本内容。
+        """
+        messages.append(SystemMessage(content=prompt))
 
         # Create the prompt with the question
-        prompt = WEB_SURFER_QA_PROMPT(title, question)
+        def WEB_SURFER_PROMPT(title: str, question: str | None = None) -> str:
+            base_prompt = f"我们正在访问网页 '{title}'。其全文内容如下，同时附带页面当前视口的截图。"
+            if question is not None:
+                return f"{base_prompt} 请按要求帮我提取内容：'{question}'：\n\n"
+            else:
+                return f"{base_prompt} 请按要求帮我提取内容\n\n"
+        prompt = WEB_SURFER_PROMPT(title, question)
 
         # Truncate the page content if needed to fit within token limits
         tokenizer = tiktoken.encoding_for_model("gpt-4o")
@@ -1892,6 +2391,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         )
 
         # Generate the response
+        
         response = await self._model_client.create(
             messages, cancellation_token=cancellation_token
         )

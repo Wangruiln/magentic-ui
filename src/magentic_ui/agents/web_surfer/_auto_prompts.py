@@ -66,7 +66,7 @@ When outputing multiple actions at the same time, make sure:
 
 
 WEB_SURFER_TOOL_PROMPT = """
-The last request received was: {last_outside_message}
+The last request received was: {last_outside_message}. Please provide in - depth and detailed information about this topic, avoiding superficial content.
 
 Note that attached images may be relevant to the request.
 
@@ -126,7 +126,7 @@ You have access to the following tools and you must use a single tool to respond
 - tool_name: "close_tab", tool_args: {{"tab_index": int}} - Close a specific tab by its index. The tab_index arg specifies which tab to close.
 - tool_name: "upload_file", tool_args: {{"target_id": int, "file_path": str}} - Upload a file to the target input element. The target_id arg specifies which field to upload the file to, and the file_path arg specifies the path of the file to upload.
 
-The require_approval parameter should be set to true for such cases.
+The require_approval parameter should be set to true.
 
 When deciding between tools, follow these guidelines:
 

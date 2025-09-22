@@ -19,7 +19,7 @@ from loguru import logger
 
 
 async def connect_browser_with_retry(
-    playwright: Playwright, url: str, timeout: int = 30
+    playwright: Playwright, url: str, timeout: int = 60
 ) -> Browser:
     """Wait for the WebSocket server to be ready."""
     start_time = asyncio.get_event_loop().time()
@@ -165,27 +165,29 @@ class DockerPlaywrightBrowser(PlaywrightBrowser):
         Start a headless Playwright browser using the official Playwright Docker image.
         """
         retries = 0
-        while True:
-            self._container = await self.create_container()
-            try:
-                await asyncio.to_thread(self._container.start)
-                break
-            except DockerException as e:
-                # This throws an exception.. should we try/catch this as well?
-                # self._close_container()
-                # Try 3 times, then give up
-                retries += 1
-                if retries >= 3:
-                    raise
-                self._generate_new_browser_address()
-                logger.warning(
-                    f"Failed to start container: {e}.\nRetrying with new address: {self.browser_address}"
-                )
+        # while True:
+        #     self._container = await self.create_container()
+        #     try:
+        #         await asyncio.to_thread(self._container.start)  
+        #         break
+        #     except DockerException as e:
+        #         # This throws an exception.. should we try/catch this as well?
+        #         # self._close_container()
+        #         # Try 3 times, then give up
+        #         retries += 1
+        #         if retries >= 3:
+        #             raise
+        #         self._generate_new_browser_address()
+        #         logger.warning(
+        #             f"Failed to start container: {e}.\nRetrying with new address: {self.browser_address}"
+        #         )
 
         browser_address = self.browser_address
         logger.info(f"Browser started at {browser_address}")
 
         self._playwright = await async_playwright().start()
+
+        
         logger.info(f"Connecting to browser at {browser_address}")
         self._browser = await connect_browser_with_retry(
             self._playwright, browser_address

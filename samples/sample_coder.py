@@ -2,6 +2,7 @@ import asyncio
 import argparse
 from autogen_agentchat.ui import Console
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
 from autogen_agentchat.conditions import TextMentionTermination
 from magentic_ui.agents import CoderAgent
 from magentic_ui.teams import RoundRobinGroupChat
@@ -17,7 +18,14 @@ async def main() -> None:
         help="Directory where coder will save files",
     )
     args = parser.parse_args()
-    model_client = OpenAIChatCompletionClient(model="gpt-4o")
+    
+    model_client = AzureOpenAIChatCompletionClient(
+        model="gpt-4o",
+        api_version="2024-12-01-preview",
+        azure_endpoint="https://midas-openai2.openai.azure.com",
+        azure_deployment="us-gpt-4o",
+        api_key='',  # 注意：实际部署时不要硬编码密钥
+    )
 
     termination = TextMentionTermination("EXITT")
 
@@ -37,7 +45,6 @@ async def main() -> None:
     )
     await team.lazy_init()
     user_message = await asyncio.get_event_loop().run_in_executor(None, input, ">: ")
-
     stream = team.run_stream(task=user_message)
     await Console(stream)
 

@@ -547,7 +547,6 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         monitor_pause_task = asyncio.create_task(
             self.monitor_pause(llm_cancellation_token)
         )
-
         try:
             for _ in range(self.max_actions_per_step):
                 # 1) Generate the next action to take
@@ -1304,12 +1303,13 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             ret, approved = await self._check_url_and_generate_msg("bing.com")
             if not approved:
                 return ret
+            url_q = quote_plus(url)
             (
                 reset_prior_metadata,
                 reset_last_download,
             ) = await self._playwright_controller.visit_page(
                 self._page,
-                f"https://www.bing.com/search?q={quote_plus(url)}&FORM=QBLH",
+                f"https://www.bing.com/search?q={url_q}&FORM=QBLH",
             )
         # Otherwise, prefix with https://
         else:
@@ -1340,19 +1340,34 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         return "I refreshed the current page."
 
     async def _execute_tool_web_search(self, args: Dict[str, Any]) -> str:
+        
         assert self._page is not None
         ret, approved = await self._check_url_and_generate_msg("bing.com")
         if not approved:
             return ret
         query = cast(str, args.get("query"))
         action_description = f"I typed '{query}' into the browser search bar."
+        #breakpoint()
+        #query_q=quote_plus(query)
         (
             reset_prior_metadata,
             reset_last_download,
         ) = await self._playwright_controller.visit_page(
             self._page,
-            f"https://www.bing.com/search?q={quote_plus(query)}&FORM=QBLH",
+            f"https://www.bing.com/search?q={query}&FORM=QBLH",
         )
+        
+        print(self._page)
+        new_screenshot = (await self._playwright_controller.get_screenshot(self._page))
+        if self.debug_dir is not None:
+            current_timestamp = "_" + int(time.time()).__str__()
+            screenshot_png_name = (
+                "screenshot_raw" + current_timestamp + ".png"
+            )
+            PIL.Image.open(io.BytesIO(new_screenshot)).save(
+                os.path.join(self.debug_dir, screenshot_png_name)
+            )
+        
         if reset_last_download:
             self._last_download = None
         if reset_prior_metadata:
@@ -1641,6 +1656,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
             ValueError: If an unknown tool is specified
             RuntimeError: If the WebSurfer was paused during tool execution
         """
+        #breakpoint()
         assert self._context is not None, "Browser context is not initialized"
         assert len(message) == 1, "Expected exactly one function call"
         assert self._page is not None
@@ -1892,6 +1908,7 @@ class WebSurfer(BaseChatAgent, Component[WebSurferConfig]):
         )
 
         # Generate the response
+        
         response = await self._model_client.create(
             messages, cancellation_token=cancellation_token
         )
