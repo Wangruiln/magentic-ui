@@ -11,6 +11,35 @@ _Automate your web tasks while you stay in control_
 </div>
 
 ---
+```bash
+创建容器
+sudo docker build -t magentic-ui-vnc-browser:latest ./src/magentic_ui/docker/magentic-ui-browser-docker
+
+启动容器
+sudo docker run -it --user pwuser -p 37367:37367 --cap-add=SYS_ADMIN magentic-ui-vnc-browser
+#注意容器的两个端口在启动文件（在dockerfile里面查看）里面设置了，所以下面两个端口需要一致
+
+启动fastapi
+cd magentic-ui
+source .venv/bin/activate
+python xxx.py --port 37367 --novnc-port 6080
+```
+
+> **Note**： 可以在 ./src/magentic_ui/__init__.py 修改你需要的web_surfer的版本，v2是加入了深度搜索功能的版本，v3在v2的基础上理解图片，但是还未完善，期待完善。
+
+- **/search_url**：这个目录下包括了两个http服务，search_url.py作为web_surfer_v2功能的包装，加入了简单的查询规划，可以用search_url_test.py来测试；only_url_search.py是为了爬取内容专门利用这个环境和playwright搭建的，不由智能体决策，只通过传递url和query对网站内容进行爬取。
+
+- **/src/magentic_ui/agents/web_surfer_v2/_auto_web_surfer.py**：主要在这里增加了功能，主要修改了on_message_stream、_execute_tool_deep_web_search等函数
+
+
+
+
+
+
+
+----
+以下是原版readme,也能按照以下流程熟悉一下magentic-ui的一般流程和可视化操作界面
+---
 
 Magentic-UI is a **research prototype** of a human-centered interface powered by a multi-agent system that can browse and perform actions on the web, generate and execute code, and generate and analyze files.
 
